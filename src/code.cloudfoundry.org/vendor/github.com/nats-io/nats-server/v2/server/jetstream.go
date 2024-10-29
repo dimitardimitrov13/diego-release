@@ -105,6 +105,7 @@ type jetStream struct {
 	storeReserved int64
 	memUsed       int64
 	storeUsed     int64
+	queueLimit    int64
 	clustered     int32
 	mu            sync.RWMutex
 	srv           *Server
@@ -213,6 +214,7 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	cfg := *config
 	if cfg.StoreDir == _EMPTY_ {
 		cfg.StoreDir = filepath.Join(os.TempDir(), JetStreamStoreDir)
+		s.Warnf("Temporary storage directory used, data could be lost on system reboot")
 	}
 
 	// We will consistently place the 'jetstream' directory under the storedir that was handed to us. Prior to 2.2.3 though
@@ -376,6 +378,9 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
 	}
 	s.gcbMu.Unlock()
+
+	// TODO: Not currently reloadable.
+	atomic.StoreInt64(&js.queueLimit, s.getOpts().JetStreamRequestQueueLimit)
 
 	s.js.Store(js)
 
@@ -2467,6 +2472,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	} else {
 		// Create one in tmp directory, but make it consistent for restarts.
 		jsc.StoreDir = filepath.Join(os.TempDir(), "nats", JetStreamStoreDir)
+		s.Warnf("Temporary storage directory used, data could be lost on system reboot")
 	}
 
 	opts := s.getOpts()

@@ -312,6 +312,8 @@ type outbound struct {
 	cw  *s2.Writer
 }
 
+const nbMaxVectorSize = 1024 // == IOV_MAX on Linux/Darwin and most other Unices (except Solaris/AIX)
+
 const nbPoolSizeSmall = 512   // Underlying array size of small buffer
 const nbPoolSizeMedium = 4096 // Underlying array size of medium buffer
 const nbPoolSizeLarge = 65536 // Underlying array size of large buffer
@@ -1611,7 +1613,7 @@ func (c *client) flushOutbound() bool {
 	// referenced in c.out.nb (which can be modified in queueOutboud() while
 	// the lock is released).
 	c.out.wnb = append(c.out.wnb, collapsed...)
-	var _orig [1024][]byte
+	var _orig [nbMaxVectorSize][]byte
 	orig := append(_orig[:0], c.out.wnb...)
 
 	// Since WriteTo is lopping things off the beginning, we need to remember
@@ -1622,13 +1624,31 @@ func (c *client) flushOutbound() bool {
 	// flush here
 	start := time.Now()
 
-	// FIXME(dlc) - writev will do multiple IOs past 1024 on
-	// most platforms, need to account for that with deadline?
-	nc.SetWriteDeadline(start.Add(wdl))
+	var n int64   // Total bytes written
+	var wn int64  // Bytes written per loop
+	var err error // Error from last write, if any
+	for len(c.out.wnb) > 0 {
+		// Limit the number of vectors to no more than nbMaxVectorSize,
+		// which if 1024, will mean a maximum of 64MB in one go.
+		wnb := c.out.wnb
+		if len(wnb) > nbMaxVectorSize {
+			wnb = wnb[:nbMaxVectorSize]
+		}
+		consumed := len(wnb)
 
-	// Actual write to the socket.
-	n, err := c.out.wnb.WriteTo(nc)
-	nc.SetWriteDeadline(time.Time{})
+		// Actual write to the socket.
+		nc.SetWriteDeadline(start.Add(wdl))
+		wn, err = wnb.WriteTo(nc)
+		nc.SetWriteDeadline(time.Time{})
+
+		// Update accounting, move wnb slice onwards if needed, or stop
+		// if a write error was reported that wasn't a short write.
+		n += wn
+		c.out.wnb = c.out.wnb[consumed-len(wnb):]
+		if err != nil && err != io.ErrShortWrite {
+			break
+		}
+	}
 
 	lft := time.Since(start)
 
@@ -1810,7 +1830,9 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 		if nc := c.nc; nc != nil && c.srv != nil {
 			// TODO: May want to send events to single go routine instead
 			// of creating a new go routine for each save.
-			go c.srv.saveClosedClient(c, nc, reason)
+			// Pass the c.subs as a reference. It may be set to nil in
+			// closeConnection.
+			go c.srv.saveClosedClient(c, nc, c.subs, reason)
 		}
 	}
 	// If writeLoop exists, let it do the final flush, close and teardown.
@@ -2950,7 +2972,7 @@ func (c *client) addShadowSub(sub *subscription, ime *ime, enact bool) (*subscri
 	if err := im.acc.sl.Insert(&nsub); err != nil {
 		errs := fmt.Sprintf("Could not add shadow import subscription for account %q", im.acc.Name)
 		c.Debugf(errs)
-		return nil, fmt.Errorf(errs)
+		return nil, errors.New(errs)
 	}
 
 	// Update our route map here. But only if we are not a leaf node or a hub leafnode.
@@ -3167,7 +3189,7 @@ func (c *client) processUnsub(arg []byte) error {
 func (c *client) checkDenySub(subject string) bool {
 	if denied, ok := c.mperms.dcache[subject]; ok {
 		return denied
-	} else if r := c.mperms.deny.Match(subject); len(r.psubs) != 0 {
+	} else if np, _ := c.mperms.deny.NumInterest(subject); np != 0 {
 		c.mperms.dcache[subject] = true
 		return true
 	} else {
@@ -3689,13 +3711,13 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	allowed := true
 	// Cache miss, check allow then deny as needed.
 	if c.perms.pub.allow != nil {
-		r := c.perms.pub.allow.Match(subject)
-		allowed = len(r.psubs) != 0
+		np, _ := c.perms.pub.allow.NumInterest(subject)
+		allowed = np != 0
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && c.perms.pub.deny != nil {
-		r := c.perms.pub.deny.Match(subject)
-		allowed = len(r.psubs) == 0
+		np, _ := c.perms.pub.deny.NumInterest(subject)
+		allowed = np == 0
 	}
 
 	// If we are currently not allowed but we are tracking reply subjects
@@ -3886,9 +3908,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 		// Match may use the subject here to populate a cache, so can not use bytesToString here.
 		r = acc.sl.Match(string(c.pa.subject))
 		if len(r.psubs)+len(r.qsubs) > 0 {
-			c.in.results[string(c.pa.subject)] = r
 			// Prune the results cache. Keeps us from unbounded growth. Random delete.
-			if len(c.in.results) > maxResultCacheSize {
+			if len(c.in.results) >= maxResultCacheSize {
 				n := 0
 				for subject := range c.in.results {
 					delete(c.in.results, subject)
@@ -3897,6 +3918,8 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 					}
 				}
 			}
+			// Then add the new cache entry.
+			c.in.results[string(c.pa.subject)] = r
 		}
 	}
 
@@ -3964,7 +3987,7 @@ func (c *client) subForReply(reply []byte) *subscription {
 func (c *client) handleGWReplyMap(msg []byte) bool {
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
-		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
+		if r := c.srv.gwLeafSubs.MatchBytes(c.pa.subject); len(r.psubs) > 0 {
 			c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, pmrNoFlag)
 		}
 	}
@@ -4626,17 +4649,18 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// Here we just care about a client or leaf and skipping a leaf and preferring locals.
 			if dst := sub.client.kind; dst == ROUTER || dst == LEAF {
 				if (src == LEAF || src == CLIENT) && dst == LEAF {
+					// Remember that leaf in case we don't find any other candidate.
 					if rsub == nil {
 						rsub = sub
 					}
 					continue
 				} else {
-					c.addSubToRouteTargets(sub)
-					// Clear rsub since we added a sub.
-					rsub = nil
-					if flags&pmrCollectQueueNames != 0 {
-						queues = append(queues, sub.queue)
+					// We would be picking a route, but if we had remembered a "hub" leaf,
+					// then pick that one instead of the route.
+					if rsub != nil && rsub.client.kind == LEAF && rsub.client.isHubLeafNode() {
+						break
 					}
+					rsub = sub
 				}
 				break
 			}
@@ -4685,8 +4709,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 
 		if rsub != nil {
-			// If we are here we tried to deliver to a local qsub
-			// but failed. So we will send it to a remote or leaf node.
+			// We are here if we have selected a leaf or route as the destination,
+			// or if we tried to deliver to a local qsub but failed.
 			c.addSubToRouteTargets(rsub)
 			if flags&pmrCollectQueueNames != 0 {
 				queues = append(queues, rsub.queue)
@@ -5284,6 +5308,14 @@ func (c *client) closeConnection(reason ClosedState) {
 		}
 	}
 
+	// Now that we are done with subscriptions, clear the field so that the
+	// connection can be released and gc'ed.
+	if kind == CLIENT || kind == LEAF {
+		c.mu.Lock()
+		c.subs = nil
+		c.mu.Unlock()
+	}
+
 	// Don't reconnect connections that have been marked with
 	// the no reconnect flag.
 	if noReconnect {
@@ -5436,17 +5468,19 @@ func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 
 	if !ok {
 		if c.kind == ROUTER && len(c.route.accName) > 0 {
-			acc = c.acc
+			if acc = c.acc; acc == nil {
+				return nil, nil
+			}
 		} else {
 			// Match correct account and sublist.
-			if acc, _ = c.srv.LookupAccount(string(c.pa.account)); acc == nil {
+			if acc, _ = c.srv.LookupAccount(bytesToString(c.pa.account)); acc == nil {
 				return nil, nil
 			}
 		}
 		sl := acc.sl
 
 		// Match against the account sublist.
-		r = sl.Match(string(c.pa.subject))
+		r = sl.MatchBytes(c.pa.subject)
 
 		// Check if we need to prune.
 		if len(c.in.pacache) >= maxPerAccountCacheSize {
@@ -5822,6 +5856,14 @@ func (c *client) Tracef(format string, v ...any) {
 func (c *client) Warnf(format string, v ...any) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Warnf(format, v...)
+}
+
+func (c *client) rateLimitFormatWarnf(format string, v ...any) {
+	if _, loaded := c.srv.rateLimitLogging.LoadOrStore(format, time.Now()); loaded {
+		return
+	}
+	statement := fmt.Sprintf(format, v...)
+	c.Warnf("%s", statement)
 }
 
 func (c *client) RateLimitWarnf(format string, v ...any) {

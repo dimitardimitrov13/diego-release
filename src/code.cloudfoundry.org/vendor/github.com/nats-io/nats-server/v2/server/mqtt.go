@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -23,7 +24,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4276,9 +4277,7 @@ func (s *Server) mqttCheckPubRetainedPerms() {
 			})
 		}
 		asm.mu.RUnlock()
-		sort.Slice(rms, func(i, j int) bool {
-			return rms[i].rmsg.sseq < rms[j].rmsg.sseq
-		})
+		slices.SortFunc(rms, func(i, j retainedMsg) int { return cmp.Compare(i.rmsg.sseq, j.rmsg.sseq) })
 
 		perms := map[string]*perm{}
 		deletes := map[string]uint64{}
@@ -4355,13 +4354,13 @@ func generatePubPerms(perms *Permissions) *perm {
 func pubAllowed(perms *perm, subject string) bool {
 	allowed := true
 	if perms.allow != nil {
-		r := perms.allow.Match(subject)
-		allowed = len(r.psubs) != 0
+		np, _ := perms.allow.NumInterest(subject)
+		allowed = np != 0
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && perms.deny != nil {
-		r := perms.deny.Match(subject)
-		allowed = len(r.psubs) == 0
+		np, _ := perms.deny.NumInterest(subject)
+		allowed = np == 0
 	}
 	return allowed
 }

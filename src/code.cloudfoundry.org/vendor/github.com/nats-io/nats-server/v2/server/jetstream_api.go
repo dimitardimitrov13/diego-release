@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -298,6 +299,9 @@ const (
 	// JSAdvisoryServerRemoved notification that a server has been removed from the system.
 	JSAdvisoryServerRemoved = "$JS.EVENT.ADVISORY.SERVER.REMOVED"
 
+	// JSAdvisoryAPILimitReached notification that a server has reached the JS API hard limit.
+	JSAdvisoryAPILimitReached = "$JS.EVENT.ADVISORY.API.LIMIT_REACHED"
+
 	// JSAuditAdvisory is a notification about JetStream API access.
 	// FIXME - Add in details about who..
 	JSAuditAdvisory = "$JS.EVENT.ADVISORY.API"
@@ -344,6 +348,10 @@ const JSMaxMetadataLen = 128 * 1024
 // JSMaxNameLen is the maximum name lengths for streams, consumers and templates.
 // Picked 255 as it seems to be a widely used file name limit
 const JSMaxNameLen = 255
+
+// JSDefaultRequestQueueLimit is the default number of entries that we will
+// put on the global request queue before we react.
+const JSDefaultRequestQueueLimit = 10_000
 
 // Responses for API calls.
 
@@ -824,10 +832,22 @@ func (js *jetStream) apiDispatch(sub *subscription, c *client, acc *Account, sub
 	// Copy the state. Note the JSAPI only uses the hdr index to piece apart the
 	// header from the msg body. No other references are needed.
 	// Check pending and warn if getting backed up.
-	const warnThresh = 32
 	pending := s.jsAPIRoutedReqs.push(&jsAPIRoutedReq{jsub, sub, acc, subject, reply, copyBytes(rmsg), c.pa})
-	if pending > warnThresh {
-		s.RateLimitWarnf("JetStream request queue has high pending count: %d", pending)
+	limit := atomic.LoadInt64(&js.queueLimit)
+	if pending >= int(limit) {
+		s.rateLimitFormatWarnf("JetStream API queue limit reached, dropping %d requests", pending)
+		s.jsAPIRoutedReqs.drain()
+
+		s.publishAdvisory(nil, JSAdvisoryAPILimitReached, JSAPILimitReachedAdvisory{
+			TypedEvent: TypedEvent{
+				Type: JSAPILimitReachedAdvisoryType,
+				ID:   nuid.Next(),
+				Time: time.Now().UTC(),
+			},
+			Server:  s.Name(),
+			Domain:  js.config.Domain,
+			Dropped: int64(pending),
+		})
 	}
 }
 
@@ -1203,8 +1223,8 @@ func (s *Server) jsTemplateNamesRequest(sub *subscription, c *client, _ *Account
 	}
 
 	ts := acc.templates()
-	sort.Slice(ts, func(i, j int) bool {
-		return strings.Compare(ts[i].StreamTemplateConfig.Name, ts[j].StreamTemplateConfig.Name) < 0
+	slices.SortFunc(ts, func(i, j *streamTemplate) int {
+		return cmp.Compare(i.StreamTemplateConfig.Name, j.StreamTemplateConfig.Name)
 	})
 
 	tcnt := len(ts)
@@ -1624,7 +1644,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 		}
 		js.mu.RUnlock()
 		if len(resp.Streams) > 1 {
-			sort.Slice(resp.Streams, func(i, j int) bool { return strings.Compare(resp.Streams[i], resp.Streams[j]) < 0 })
+			slices.Sort(resp.Streams)
 		}
 		numStreams = len(resp.Streams)
 		if offset > numStreams {
@@ -1640,9 +1660,7 @@ func (s *Server) jsStreamNamesRequest(sub *subscription, c *client, _ *Account, 
 		msets := acc.filteredStreams(filter)
 		// Since we page results order matters.
 		if len(msets) > 1 {
-			sort.Slice(msets, func(i, j int) bool {
-				return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
-			})
+			slices.SortFunc(msets, func(i, j *stream) int { return cmp.Compare(i.cfg.Name, j.cfg.Name) })
 		}
 
 		numStreams = len(msets)
@@ -1739,9 +1757,7 @@ func (s *Server) jsStreamListRequest(sub *subscription, c *client, _ *Account, s
 		msets = acc.filteredStreams(filter)
 	}
 
-	sort.Slice(msets, func(i, j int) bool {
-		return strings.Compare(msets[i].cfg.Name, msets[j].cfg.Name) < 0
-	})
+	slices.SortFunc(msets, func(i, j *stream) int { return cmp.Compare(i.cfg.Name, j.cfg.Name) })
 
 	scnt := len(msets)
 	if offset > scnt {
@@ -1944,7 +1960,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 					subjs = append(subjs, subj)
 				}
 				// Sort it
-				sort.Strings(subjs)
+				slices.Sort(subjs)
 
 				if offset > len(subjs) {
 					offset = len(subjs)
@@ -2748,6 +2764,12 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 		return
 	}
 
+	// This should only be coming from the System Account.
+	if acc != s.SystemAccount() {
+		s.RateLimitWarnf("JetStream API stepdown request from non-system account: %q user: %q", ci.serviceAccount(), ci.User)
+		return
+	}
+
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil || cc.meta == nil {
 		return
@@ -2772,33 +2794,35 @@ func (s *Server) jsLeaderStepDownRequest(sub *subscription, c *client, _ *Accoun
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
-		if len(req.Placement.Tags) > 0 {
-			// Tags currently not supported.
-			resp.Error = NewJSClusterTagsError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		cn := req.Placement.Cluster
-		var peers []string
-		ourID := cc.meta.ID()
-		for _, p := range cc.meta.Peers() {
-			if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
-				if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
-					continue
-				}
-				peers = append(peers, p.ID)
+		if req.Placement != nil {
+			if len(req.Placement.Tags) > 0 {
+				// Tags currently not supported.
+				resp.Error = NewJSClusterTagsError()
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
 			}
+			cn := req.Placement.Cluster
+			var peers []string
+			ourID := cc.meta.ID()
+			for _, p := range cc.meta.Peers() {
+				if si, ok := s.nodeToInfo.Load(p.ID); ok && si != nil {
+					if ni := si.(nodeInfo); ni.offline || ni.cluster != cn || p.ID == ourID {
+						continue
+					}
+					peers = append(peers, p.ID)
+				}
+			}
+			if len(peers) == 0 {
+				resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+				return
+			}
+			// Randomize and select.
+			if len(peers) > 1 {
+				rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+			}
+			preferredLeader = peers[0]
 		}
-		if len(peers) == 0 {
-			resp.Error = NewJSClusterNoPeersError(fmt.Errorf("no replacement peer connected"))
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-		// Randomize and select.
-		if len(peers) > 1 {
-			rand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
-		}
-		preferredLeader = peers[0]
 	}
 
 	// Call actual stepdown.
@@ -4074,7 +4098,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 			resp.Consumers = append(resp.Consumers, consumer)
 		}
 		if len(resp.Consumers) > 1 {
-			sort.Slice(resp.Consumers, func(i, j int) bool { return strings.Compare(resp.Consumers[i], resp.Consumers[j]) < 0 })
+			slices.Sort(resp.Consumers)
 		}
 		numConsumers = len(resp.Consumers)
 		if offset > numConsumers {
@@ -4095,9 +4119,7 @@ func (s *Server) jsConsumerNamesRequest(sub *subscription, c *client, _ *Account
 		}
 
 		obs := mset.getPublicConsumers()
-		sort.Slice(obs, func(i, j int) bool {
-			return strings.Compare(obs[i].name, obs[j].name) < 0
-		})
+		slices.SortFunc(obs, func(i, j *consumer) int { return cmp.Compare(i.name, j.name) })
 
 		numConsumers = len(obs)
 		if offset > numConsumers {
@@ -4190,9 +4212,7 @@ func (s *Server) jsConsumerListRequest(sub *subscription, c *client, _ *Account,
 	}
 
 	obs := mset.getPublicConsumers()
-	sort.Slice(obs, func(i, j int) bool {
-		return strings.Compare(obs[i].name, obs[j].name) < 0
-	})
+	slices.SortFunc(obs, func(i, j *consumer) int { return cmp.Compare(i.name, j.name) })
 
 	ocnt := len(obs)
 	if offset > ocnt {

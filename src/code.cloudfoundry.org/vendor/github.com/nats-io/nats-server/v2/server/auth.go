@@ -857,6 +857,54 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	// If we have a jwt and a userClaim, make sure we have the Account, etc associated.
 	// We need to look up the account. This will use an account resolver if one is present.
 	if juc != nil {
+		issuer := juc.Issuer
+		if juc.IssuerAccount != _EMPTY_ {
+			issuer = juc.IssuerAccount
+		}
+		if pinnedAcounts != nil {
+			if _, ok := pinnedAcounts[issuer]; !ok {
+				c.Debugf("Account %s not listed as operator pinned account", issuer)
+				atomic.AddUint64(&s.pinnedAccFail, 1)
+				return false
+			}
+		}
+		if acc, err = s.LookupAccount(issuer); acc == nil {
+			c.Debugf("Account JWT lookup error: %v", err)
+			return false
+		}
+		acc.mu.RLock()
+		aissuer := acc.Issuer
+		acc.mu.RUnlock()
+		if !s.isTrustedIssuer(aissuer) {
+			c.Debugf("Account JWT not signed by trusted operator")
+			return false
+		}
+		if scope, ok := acc.hasIssuer(juc.Issuer); !ok {
+			c.Debugf("User JWT issuer is not known")
+			return false
+		} else if scope != nil {
+			if err := scope.ValidateScopedSigner(juc); err != nil {
+				c.Debugf("User JWT is not valid: %v", err)
+				return false
+			} else if uSc, ok := scope.(*jwt.UserScope); !ok {
+				c.Debugf("User JWT is not valid")
+				return false
+			} else if juc.UserPermissionLimits, err = processUserPermissionsTemplate(uSc.Template, juc, acc); err != nil {
+				c.Debugf("User JWT generated invalid permissions")
+				return false
+			}
+		}
+		if acc.IsExpired() {
+			c.Debugf("Account JWT has expired")
+			return false
+		}
+		if juc.BearerToken && acc.failBearer() {
+			c.Debugf("Account does not allow bearer tokens")
+			return false
+		}
+		// We check the allowed connection types, but only after processing
+		// of scoped signer (so that it updates `juc` with what is defined
+		// in the account.
 		allowedConnTypes, err := convertAllowedConnectionTypes(juc.AllowedConnectionTypes)
 		if err != nil {
 			// We got an error, which means some connection types were unknown. As long as
@@ -882,48 +930,6 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		}
 		if !c.connectionTypeAllowed(allowedConnTypes) {
 			c.Debugf("Connection type not allowed")
-			return false
-		}
-		issuer := juc.Issuer
-		if juc.IssuerAccount != _EMPTY_ {
-			issuer = juc.IssuerAccount
-		}
-		if pinnedAcounts != nil {
-			if _, ok := pinnedAcounts[issuer]; !ok {
-				c.Debugf("Account %s not listed as operator pinned account", issuer)
-				atomic.AddUint64(&s.pinnedAccFail, 1)
-				return false
-			}
-		}
-		if acc, err = s.LookupAccount(issuer); acc == nil {
-			c.Debugf("Account JWT lookup error: %v", err)
-			return false
-		}
-		if !s.isTrustedIssuer(acc.Issuer) {
-			c.Debugf("Account JWT not signed by trusted operator")
-			return false
-		}
-		if scope, ok := acc.hasIssuer(juc.Issuer); !ok {
-			c.Debugf("User JWT issuer is not known")
-			return false
-		} else if scope != nil {
-			if err := scope.ValidateScopedSigner(juc); err != nil {
-				c.Debugf("User JWT is not valid: %v", err)
-				return false
-			} else if uSc, ok := scope.(*jwt.UserScope); !ok {
-				c.Debugf("User JWT is not valid")
-				return false
-			} else if juc.UserPermissionLimits, err = processUserPermissionsTemplate(uSc.Template, juc, acc); err != nil {
-				c.Debugf("User JWT generated invalid permissions")
-				return false
-			}
-		}
-		if acc.IsExpired() {
-			c.Debugf("Account JWT has expired")
-			return false
-		}
-		if juc.BearerToken && acc.failBearer() {
-			c.Debugf("Account does not allow bearer tokens")
 			return false
 		}
 		// skip validation of nonce when presented with a bearer token
@@ -978,12 +984,12 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			deniedSub := []string{}
 			for _, sub := range denyAllJs {
 				if c.perms.pub.deny != nil {
-					if r := c.perms.pub.deny.Match(sub); len(r.psubs)+len(r.qsubs) > 0 {
+					if c.perms.pub.deny.HasInterest(sub) {
 						deniedPub = append(deniedPub, sub)
 					}
 				}
 				if c.perms.sub.deny != nil {
-					if r := c.perms.sub.deny.Match(sub); len(r.psubs)+len(r.qsubs) > 0 {
+					if c.perms.sub.deny.HasInterest(sub) {
 						deniedSub = append(deniedSub, sub)
 					}
 				}

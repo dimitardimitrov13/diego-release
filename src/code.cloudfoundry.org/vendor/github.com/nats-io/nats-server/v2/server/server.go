@@ -27,8 +27,10 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime/pprof"
+	"unicode"
 
 	// Allow dynamic profiling.
 	_ "net/http/pprof"
@@ -953,11 +955,13 @@ func (s *Server) serverName() string {
 func (s *Server) ClientURL() string {
 	// FIXME(dlc) - should we add in user and pass if defined single?
 	opts := s.getOpts()
-	scheme := "nats://"
+	var u url.URL
+	u.Scheme = "nats"
 	if opts.TLSConfig != nil {
-		scheme = "tls://"
+		u.Scheme = "tls"
 	}
-	return fmt.Sprintf("%s%s:%d", scheme, opts.Host, opts.Port)
+	u.Host = net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
+	return u.String()
 }
 
 func validateCluster(o *Options) error {
@@ -1538,7 +1542,7 @@ func (s *Server) isRunning() bool {
 
 func (s *Server) logPid() error {
 	pidStr := strconv.Itoa(os.Getpid())
-	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), 0660)
+	return os.WriteFile(s.getOpts().PidFile, []byte(pidStr), defaultFilePerms)
 }
 
 // numReservedAccounts will return the number of reserved accounts configured in the server.
@@ -1698,12 +1702,14 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		replies: make(map[string]msgHandler),
 		sendq:   newIPQueue[*pubMsg](s, "System sendQ"),
 		recvq:   newIPQueue[*inSysMsg](s, "System recvQ"),
+		recvqp:  newIPQueue[*inSysMsg](s, "System recvQ Pings"),
 		resetCh: make(chan struct{}),
 		sq:      s.newSendQ(),
-		statsz:  eventsHBInterval,
+		statsz:  statsHBInterval,
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
+	recvq, recvqp := s.sys.recvq, s.sys.recvqp
 	s.sys.wg.Add(1)
 	s.mu.Unlock()
 
@@ -1717,7 +1723,9 @@ func (s *Server) setSystemAccount(acc *Account) error {
 	go s.internalSendLoop(&s.sys.wg)
 
 	// Start the internal loop for inbound messages.
-	go s.internalReceiveLoop()
+	go s.internalReceiveLoop(recvq)
+	// Start the internal loop for inbound STATSZ/Ping messages.
+	go s.internalReceiveLoop(recvqp)
 
 	// Start up our general subscriptions
 	s.initEventTracking()
@@ -1982,9 +1990,9 @@ func (s *Server) updateAccountWithClaimJWT(acc *Account, claimJWT string) error 
 	accClaims, _, err := s.verifyAccountClaims(claimJWT)
 	if err == nil && accClaims != nil {
 		acc.mu.Lock()
-		if acc.Issuer == _EMPTY_ {
-			acc.Issuer = accClaims.Issuer
-		}
+		// if an account is updated with a different operator signing key, we want to
+		// show a consistent issuer.
+		acc.Issuer = accClaims.Issuer
 		if acc.Name != accClaims.Subject {
 			acc.mu.Unlock()
 			return ErrAccountValidation
@@ -2348,6 +2356,9 @@ func (s *Server) Start() {
 	// Solicit remote servers for leaf node connections.
 	if len(opts.LeafNode.Remotes) > 0 {
 		s.solicitLeafNodeRemotes(opts.LeafNode.Remotes)
+		if opts.Cluster.Name == opts.ServerName && strings.ContainsFunc(opts.Cluster.Name, unicode.IsSpace) {
+			s.Warnf("Server name has spaces and used as the cluster name, leaf remotes may not connect properly")
+		}
 	}
 
 	// TODO (ik): I wanted to refactor this by starting the client
@@ -2772,6 +2783,7 @@ func (s *Server) StartProfiler() {
 		Addr:           hp,
 		Handler:        http.DefaultServeMux,
 		MaxHeaderBytes: 1 << 20,
+		ReadTimeout:    time.Second * 5,
 	}
 	s.profiler = l
 	s.profilingServer = srv
@@ -2914,8 +2926,10 @@ func (s *Server) startMonitoring(secure bool) error {
 		}
 		hp = net.JoinHostPort(opts.HTTPHost, strconv.Itoa(port))
 		config := opts.TLSConfig.Clone()
-		config.GetConfigForClient = s.getMonitoringTLSConfig
-		config.ClientAuth = tls.NoClientCert
+		if !s.ocspPeerVerify {
+			config.GetConfigForClient = s.getMonitoringTLSConfig
+			config.ClientAuth = tls.NoClientCert
+		}
 		httpListener, err = tls.Listen("tcp", hp, config)
 
 	} else {
@@ -2971,10 +2985,11 @@ func (s *Server) startMonitoring(secure bool) error {
 	// to return empty response or unable to display page if the
 	// server needs more time to build the response.
 	srv := &http.Server{
-		Addr:           hp,
-		Handler:        mux,
-		MaxHeaderBytes: 1 << 20,
-		ErrorLog:       log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		Addr:              hp,
+		Handler:           mux,
+		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          log.New(&captureHTTPServerLog{s, "monitoring: "}, _EMPTY_, 0),
+		ReadHeaderTimeout: time.Second * 5,
 	}
 	s.mu.Lock()
 	s.http = httpListener
@@ -3294,7 +3309,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 
 // This will save off a closed client in a ring buffer such that
 // /connz can inspect. Useful for debugging, etc.
-func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
+func (s *Server) saveClosedClient(c *client, nc net.Conn, subs map[string]*subscription, reason ClosedState) {
 	now := time.Now()
 
 	s.accountDisconnectEvent(c, now, reason.String())
@@ -3303,17 +3318,18 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, reason ClosedState) {
 
 	cc := &closedClient{}
 	cc.fill(c, nc, now, false)
+	// Note that cc.fill is using len(c.subs), which may have been set to nil by now,
+	// so replace cc.NumSubs with len(subs).
+	cc.NumSubs = uint32(len(subs))
 	cc.Stop = &now
 	cc.Reason = reason.String()
 
 	// Do subs, do not place by default in main ConnInfo
-	if len(c.subs) > 0 {
-		cc.subs = make([]SubDetail, 0, len(c.subs))
-		for _, sub := range c.subs {
+	if len(subs) > 0 {
+		cc.subs = make([]SubDetail, 0, len(subs))
+		for _, sub := range subs {
 			cc.subs = append(cc.subs, newSubDetail(sub))
 		}
-		// Now set this to nil to allow connection to be released.
-		c.subs = nil
 	}
 	// Hold user as well.
 	cc.user = c.getRawAuthUser()
@@ -3425,6 +3441,20 @@ func tlsVersion(ver uint16) string {
 		return "1.3"
 	}
 	return fmt.Sprintf("Unknown [0x%x]", ver)
+}
+
+func tlsVersionFromString(ver string) (uint16, error) {
+	switch ver {
+	case "1.0":
+		return tls.VersionTLS10, nil
+	case "1.1":
+		return tls.VersionTLS11, nil
+	case "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	}
+	return 0, fmt.Errorf("unknown version: %v", ver)
 }
 
 // We use hex here so we don't need multiple versions

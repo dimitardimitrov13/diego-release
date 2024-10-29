@@ -721,7 +721,7 @@ func isOutOfSpaceErr(err error) bool {
 var errFirstSequenceMismatch = errors.New("first sequence mismatch")
 
 func isClusterResetErr(err error) bool {
-	return err == errLastSeqMismatch || err == ErrStoreEOF || err == errFirstSequenceMismatch || err == errCatchupTooManyRetries
+	return err == errLastSeqMismatch || err == ErrStoreEOF || err == errFirstSequenceMismatch || errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries
 }
 
 // Copy all fields.
@@ -764,4 +764,12 @@ func stringToBytes(s string) []byte {
 	p := unsafe.StringData(s)
 	b := unsafe.Slice(p, len(s))
 	return b
+}
+
+// Forces a copy of a string, for use in the case that you might have been passed a value when bytesToString was used,
+// but now you need a separate copy of it to store for longer-term use.
+func copyString(s string) string {
+	b := make([]byte, len(s))
+	copy(b, s)
+	return bytesToString(b)
 }

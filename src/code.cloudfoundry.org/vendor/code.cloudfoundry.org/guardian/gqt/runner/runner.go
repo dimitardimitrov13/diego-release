@@ -220,7 +220,7 @@ func DefaultGdnRunnerConfig(binaries Binaries) GdnRunnerConfig {
 	var err error
 	config.TmpDir, err = os.MkdirTemp("", fmt.Sprintf("test-garden-%s-", config.Tag))
 	Expect(err).NotTo(HaveOccurred())
-	Expect(os.Chmod(config.TmpDir, 0777)).To(Succeed())
+	Expect(os.Chmod(config.TmpDir, 0755)).To(Succeed())
 
 	config.ConsoleSocketsPath = filepath.Join(config.TmpDir, "console-sockets")
 	config.DepotDir = filepath.Join(config.TmpDir, "containers")
@@ -405,7 +405,7 @@ func (r *RunningGarden) DestroyAndStop() error {
 
 func (r *RunningGarden) forceStop() error {
 	if runtime.GOOS == "windows" {
-		// Windows doesn't support SIGTERM
+		// nosec G104 - windows doesn't support signalling and throws an error which we want to ignore
 		r.Kill()
 	} else {
 		if err := r.Stop(); err != nil {
@@ -563,7 +563,8 @@ func initGrootStore(grootBin, storePath string, idMappings []string) {
 		freeCmd := exec.Command("free", "-h")
 		freeCmd.Stdout = GinkgoWriter
 		freeCmd.Stderr = GinkgoWriter
-		freeCmd.Run()
+		err := freeCmd.Run()
+		Expect(err).NotTo(HaveOccurred())
 	}
 	Expect(err).NotTo(HaveOccurred(), "grootfs init-store failed. This might be because the machine is running out of RAM. Check the output of `free` above for more info.")
 }

@@ -15,7 +15,7 @@ package stree
 
 import (
 	"bytes"
-	"sort"
+	"slices"
 )
 
 // SubjectTree is an adaptive radix trie (ART) for storing subject information on literal subjects.
@@ -52,6 +52,11 @@ func (t *SubjectTree[T]) Empty() *SubjectTree[T] {
 // Insert a value into the tree. Will return if the value was updated and if so the old value.
 func (t *SubjectTree[T]) Insert(subject []byte, value T) (*T, bool) {
 	if t == nil {
+		return nil, false
+	}
+
+	// Make sure we never insert anything with a noPivot byte.
+	if bytes.IndexByte(subject, noPivot) >= 0 {
 		return nil, false
 	}
 
@@ -151,7 +156,7 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 		ln.setSuffix(ln.suffix[cpi:])
 		si += cpi
 		// Make sure we have different pivot, normally this will be the case unless we have overflowing prefixes.
-		if p := pivot(ln.suffix, 0); si < len(subject) && p == subject[si] {
+		if p := pivot(ln.suffix, 0); cpi > 0 && si < len(subject) && p == subject[si] {
 			// We need to split the original leaf. Recursively call into insert.
 			t.insert(np, subject, value, si)
 			// Now add the update version of *np as a child to the new node4.
@@ -382,7 +387,7 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, cb func(subject []byte, val *T
 		}
 	}
 	// Now sort.
-	sort.SliceStable(nodes, func(i, j int) bool { return bytes.Compare(nodes[i].path(), nodes[j].path()) < 0 })
+	slices.SortStableFunc(nodes, func(a, b node) int { return bytes.Compare(a.path(), b.path()) })
 	// Now walk the nodes in order and call into next iter.
 	for i := range nodes {
 		if !t.iter(nodes[i], pre, cb) {

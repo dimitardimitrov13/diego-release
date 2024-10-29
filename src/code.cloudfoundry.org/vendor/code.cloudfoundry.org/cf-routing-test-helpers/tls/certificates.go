@@ -10,10 +10,9 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
 	"os"
 	"time"
-
-	"net"
 
 	. "github.com/onsi/gomega"
 )
@@ -71,7 +70,7 @@ func mapToX509Cert(PemEncodedCertFilePath string) []*x509.Certificate {
 }
 
 func buildCaFile() (string, *rsa.PrivateKey, error) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return "", nil, err
 	}
@@ -115,7 +114,6 @@ func buildCaFile() (string, *rsa.PrivateKey, error) {
 		Type:  "CERTIFICATE",
 		Bytes: caCert,
 	})
-
 	if err != nil {
 		return "", nil, err
 	}
@@ -193,6 +191,6 @@ func buildCertPem(privKey *rsa.PrivateKey, caFilePath string) (cert []byte, key 
 func writeClientCredFile(data []byte) string {
 	tempFile, err := os.CreateTemp(os.TempDir(), "clientcredstest")
 	Expect(err).NotTo(HaveOccurred())
-	Expect(os.WriteFile(tempFile.Name(), data, os.ModePerm)).To(Succeed())
+	Expect(os.WriteFile(tempFile.Name(), data, 0600)).To(Succeed())
 	return tempFile.Name()
 }

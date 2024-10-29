@@ -2,7 +2,7 @@
 name: cnb_app_lifecycle
 
 dependencies:
-  - golang-1.22-linux
+  - golang-1.23-linux
   - healthcheck
   - diego-sshd
 
@@ -44,7 +44,6 @@ files:
   - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/defaults/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/middleware/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/middleware/private/metrics/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/protocol/query/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/protocol/restjson/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/aws-sdk-go-v2/aws/protocol/xml/*.go # gosub
@@ -109,11 +108,13 @@ files:
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/internal/sync/singleflight/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/io/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/logging/*.go # gosub
+  - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/metrics/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/middleware/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/private/requestcompression/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/ptr/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/rand/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/time/*.go # gosub
+  - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/tracing/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/transport/http/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/transport/http/internal/io/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/aws/smithy-go/waiter/*.go # gosub
@@ -213,7 +214,6 @@ files:
   - code.cloudfoundry.org/vendor/github.com/docker/docker/client/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/docker/docker/errdefs/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/docker/docker/internal/multierror/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/docker/docker/pkg/homedir/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/docker/docker/pkg/ioutils/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/docker/docker/pkg/jsonmessage/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/docker/docker/registry/*.go # gosub
@@ -228,11 +228,6 @@ files:
   - code.cloudfoundry.org/vendor/github.com/go-logr/stdr/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/gogo/protobuf/proto/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/golang-jwt/jwt/v4/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/golang/protobuf/proto/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/golang/protobuf/ptypes/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/golang/protobuf/ptypes/any/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/golang/protobuf/ptypes/duration/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/golang/protobuf/ptypes/timestamp/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/google/go-cmp/cmp/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/google/go-cmp/cmp/cmpopts/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/google/go-cmp/cmp/internal/diff/*.go # gosub
@@ -283,7 +278,6 @@ files:
   - code.cloudfoundry.org/vendor/github.com/klauspost/compress/zstd/internal/xxhash/*.s # gosub
   - code.cloudfoundry.org/vendor/github.com/mattn/go-colorable/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/mattn/go-isatty/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/matttproud/golang_protobuf_extensions/pbutil/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/mitchellh/go-homedir/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/mitchellh/ioprogress/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/moby/buildkit/frontend/dockerfile/command/*.go # gosub
@@ -296,16 +290,18 @@ files:
   - code.cloudfoundry.org/vendor/github.com/moby/term/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/moby/term/windows/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/morikuni/aec/*.go # gosub
+  - code.cloudfoundry.org/vendor/github.com/munnerz/goautoneg/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/opencontainers/go-digest/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/opencontainers/image-spec/specs-go/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/opencontainers/image-spec/specs-go/v1/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/pkg/errors/*.go # gosub
+  - code.cloudfoundry.org/vendor/github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil/*.go # gosub
+  - code.cloudfoundry.org/vendor/github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil/header/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/client_golang/prometheus/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/client_golang/prometheus/internal/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/client_golang/prometheus/promhttp/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/client_model/go/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/common/expfmt/*.go # gosub
-  - code.cloudfoundry.org/vendor/github.com/prometheus/common/internal/bitbucket.org/ww/goautoneg/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/common/model/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/procfs/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/prometheus/procfs/internal/fs/*.go # gosub
@@ -315,6 +311,7 @@ files:
   - code.cloudfoundry.org/vendor/github.com/spf13/pflag/*.go # gosub
   - code.cloudfoundry.org/vendor/github.com/vbatts/tar-split/archive/tar/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/*.go # gosub
+  - code.cloudfoundry.org/vendor/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/request/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/semconv/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp/internal/semconvutil/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/*.go # gosub
@@ -327,8 +324,10 @@ files:
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/internal/global/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/metric/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/metric/embedded/*.go # gosub
+  - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/metric/noop/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/propagation/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/semconv/v1.20.0/*.go # gosub
+  - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/semconv/v1.26.0/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/trace/*.go # gosub
   - code.cloudfoundry.org/vendor/go.opentelemetry.io/otel/trace/embedded/*.go # gosub
   - code.cloudfoundry.org/vendor/golang.org/x/crypto/pkcs12/*.go # gosub
@@ -338,6 +337,7 @@ files:
   - code.cloudfoundry.org/vendor/golang.org/x/sys/unix/*.s # gosub
   - code.cloudfoundry.org/vendor/golang.org/x/sys/windows/*.go # gosub
   - code.cloudfoundry.org/vendor/golang.org/x/term/*.go # gosub
+  - code.cloudfoundry.org/vendor/google.golang.org/protobuf/encoding/protodelim/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/encoding/prototext/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/encoding/protowire/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/descfmt/*.go # gosub
@@ -345,7 +345,6 @@ files:
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/detrand/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/editiondefaults/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/editiondefaults/*.binpb # gosub
-  - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/editionssupport/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/encoding/defval/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/encoding/messageset/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/encoding/tag/*.go # gosub
@@ -362,13 +361,9 @@ files:
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/strs/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/internal/version/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/proto/*.go # gosub
-  - code.cloudfoundry.org/vendor/google.golang.org/protobuf/reflect/protodesc/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/reflect/protoreflect/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/reflect/protoregistry/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/runtime/protoiface/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/runtime/protoimpl/*.go # gosub
-  - code.cloudfoundry.org/vendor/google.golang.org/protobuf/types/descriptorpb/*.go # gosub
-  - code.cloudfoundry.org/vendor/google.golang.org/protobuf/types/gofeaturespb/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/types/known/anypb/*.go # gosub
-  - code.cloudfoundry.org/vendor/google.golang.org/protobuf/types/known/durationpb/*.go # gosub
   - code.cloudfoundry.org/vendor/google.golang.org/protobuf/types/known/timestamppb/*.go # gosub
